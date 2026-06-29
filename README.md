@@ -9,7 +9,9 @@
 * **Dynamic Maturation:** After a set childhood duration (Default: 1 Kerbin Year), babies mature into a random profession (Pilot, Engineer, or Scientist) and join your workforce.  
 * **Family Tree Tracking:** The mod logs the Father and Mother of every child born.  
 * **Renaming Utility:** A built-in renamer (press 'R' in the UI) allows you to rename Kerbals without breaking their family links.  
-* **Safety First:** Breeding automatically pauses if the ship is too full or lacks resources.
+* **Background Tracking (New in 1.0.2\!):** Pregnancies now safely track time in the background. You can time-warp or fly other vessels, and babies will be born exactly on their due date\!  
+* **Father Assignment Toggle (New in 1.0.2\!):** Choose whether fathers are assigned at the moment of conception (Realistic) or dynamically chosen from the crew at the moment of birth (Dynamic).  
+* **Safety First:** Breeding automatically pauses if the ship is too full or lacks empty seats.
 
 ## **Installation**
 
@@ -20,8 +22,8 @@
 
 ## **How to Use**
 
-1\. The Interface  
-Once in flight (controlling a ship), press F7 to open the Kerbal Generations control window.  
+**1\. The Interface**  
+Once in flight (controlling a ship), press **F7** to open the Kerbal Generations control window.  
 **2\. Breeding Mechanics**
 
 * **Requirements:** At least 1 Adult Male and 1 Adult Female on the active vessel, plus at least 2 Empty Seats.  
@@ -35,8 +37,7 @@ Once in flight (controlling a ship), press F7 to open the Kerbal Generations con
 
 ## **Donations**
 
-If you enjoy watching your Kerbal dynasties grow, consider supporting the development\!
-
+If you enjoy watching your Kerbal dynasties grow, consider supporting the development\!  
 [**\[Donate / Buy me a Coffee\]**](https://ko-fi.com/batchmuse)
 
 ## **License**

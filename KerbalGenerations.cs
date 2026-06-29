@@ -5,6 +5,18 @@ using KSP.UI.Screens;
 
 namespace KerbalGenerations
 {
+    // A new class to store pregnancy data correctly in the background
+    public class PregnancyRecord
+    {
+        public string FatherName;
+        public double DueDate;
+
+        public PregnancyRecord(string f, double d)
+        {
+            FatherName = f; DueDate = d;
+        }
+    }
+
     // ----------------------------------------------------------------------
     // 1. SCENARIO MODULE: Handles Saving and Loading Data (Family Tree + Settings)
     // ----------------------------------------------------------------------
@@ -19,6 +31,7 @@ namespace KerbalGenerations
         public float BreedingSpeed = 10.0f; 
         public int MaxConcurrentPregnancies = 1;
         public double ChildhoodDuration = 9201600; // Default 1 Year (seconds)
+        public int FatherAssignmentMode = 0; // 0 = at conception (realistic), 1 = at birth (dynamic)
 
         // Stores family ties: Child Name -> Parent Names
         public Dictionary<string, FamilyLink> FamilyTree = new Dictionary<string, FamilyLink>();
@@ -26,8 +39,8 @@ namespace KerbalGenerations
         // Stores babies currently growing up: Kerbal Name -> Birth Time
         public Dictionary<string, double> GrowingBabies = new Dictionary<string, double>();
 
-        // Stores active pregnancies: Mother Name -> Seconds Progress
-        public Dictionary<string, double> PregnancyProgress = new Dictionary<string, double>();
+        // NEW: Stores active pregnancies using the new record system
+        public Dictionary<string, PregnancyRecord> ActivePregnancies = new Dictionary<string, PregnancyRecord>();
 
         public override void OnAwake()
         {
@@ -42,6 +55,7 @@ namespace KerbalGenerations
             node.AddValue("BreedingSpeed", BreedingSpeed);
             node.AddValue("MaxConcurrentPregnancies", MaxConcurrentPregnancies);
             node.AddValue("ChildhoodDuration", ChildhoodDuration);
+            node.AddValue("FatherAssignmentMode", FatherAssignmentMode);
 
             // Save Family Tree
             ConfigNode treeNode = node.AddNode("FAMILY_TREE");
@@ -63,13 +77,14 @@ namespace KerbalGenerations
                 b.AddValue("BirthDate", baby.Value);
             }
 
-            // Save Pregnancies
+            // Save Pregnancies (Updated Format)
             ConfigNode pregNode = node.AddNode("PREGNANCIES");
-            foreach (var p in PregnancyProgress)
+            foreach (var p in ActivePregnancies)
             {
                 ConfigNode entry = pregNode.AddNode("MOM");
                 entry.AddValue("Name", p.Key);
-                entry.AddValue("Progress", p.Value);
+                entry.AddValue("FatherName", p.Value.FatherName);
+                entry.AddValue("DueDate", p.Value.DueDate);
             }
         }
 
@@ -77,7 +92,7 @@ namespace KerbalGenerations
         {
             FamilyTree.Clear();
             GrowingBabies.Clear();
-            PregnancyProgress.Clear();
+            ActivePregnancies.Clear();
 
             // Load Settings
             if (node.HasValue("BreedingEnabled")) bool.TryParse(node.GetValue("BreedingEnabled"), out BreedingEnabled);
@@ -85,6 +100,7 @@ namespace KerbalGenerations
             if (node.HasValue("BreedingSpeed")) float.TryParse(node.GetValue("BreedingSpeed"), out BreedingSpeed);
             if (node.HasValue("MaxConcurrentPregnancies")) int.TryParse(node.GetValue("MaxConcurrentPregnancies"), out MaxConcurrentPregnancies);
             if (node.HasValue("ChildhoodDuration")) double.TryParse(node.GetValue("ChildhoodDuration"), out ChildhoodDuration);
+            if (node.HasValue("FatherAssignmentMode")) int.TryParse(node.GetValue("FatherAssignmentMode"), out FatherAssignmentMode);
 
             if (node.HasNode("FAMILY_TREE"))
             {
@@ -111,15 +127,28 @@ namespace KerbalGenerations
                 foreach (ConfigNode entry in node.GetNode("PREGNANCIES").GetNodes("MOM"))
                 {
                     string n = entry.GetValue("Name");
-                    double p = double.Parse(entry.GetValue("Progress"));
-                    PregnancyProgress[n] = p;
+                    
+                    // Check if this is a new save file format
+                    if (entry.HasValue("FatherName") && entry.HasValue("DueDate"))
+                    {
+                        string f = entry.GetValue("FatherName");
+                        double d = double.Parse(entry.GetValue("DueDate"));
+                        ActivePregnancies[n] = new PregnancyRecord(f, d);
+                    }
+                    // Legacy Support: Convert old save files so users don't lose pregnancies!
+                    else if (entry.HasValue("Progress"))
+                    {
+                        double p = double.Parse(entry.GetValue("Progress"));
+                        // Roughly estimate when they should be due based on old progress
+                        double remainingSeconds = (21600 - p) / BreedingSpeed; 
+                        double estimatedDue = Planetarium.GetUniversalTime() + remainingSeconds;
+                        ActivePregnancies[n] = new PregnancyRecord("Unknown", estimatedDue);
+                    }
                 }
             }
         }
         
         // --- IMPROVED RELATIONSHIP CHECKING ---
-
-        // Helper: Collects Parents and Grandparents into a set
         public HashSet<string> GetCloseRelatives(string name)
         {
             HashSet<string> relatives = new HashSet<string>();
@@ -127,11 +156,9 @@ namespace KerbalGenerations
 
             FamilyLink link = FamilyTree[name];
             
-            // Add Parents (Generation 1 Up)
             if (IsValidRelative(link.FatherName)) relatives.Add(link.FatherName);
             if (IsValidRelative(link.MotherName)) relatives.Add(link.MotherName);
 
-            // Add Grandparents (Generation 2 Up)
             if (IsValidRelative(link.FatherName) && FamilyTree.ContainsKey(link.FatherName))
             {
                 var dadLink = FamilyTree[link.FatherName];
@@ -155,10 +182,8 @@ namespace KerbalGenerations
 
         public bool AreRelated(string nameA, string nameB)
         {
-            // 0. Same Person
             if (nameA == nameB) return true; 
 
-            // 1. Direct Parent Check (Immediate)
             if (FamilyTree.ContainsKey(nameB))
             {
                 var link = FamilyTree[nameB];
@@ -170,21 +195,15 @@ namespace KerbalGenerations
                 if (link.FatherName == nameB || link.MotherName == nameB) return true;
             }
 
-            // 2. Ancestry Intersection (Siblings, Half-Siblings, First Cousins, Aunt/Uncle)
-            // We retrieve parents and grandparents for both. 
-            // If the sets intersect at ALL, they share a recent blood relative.
             HashSet<string> relativesA = GetCloseRelatives(nameA);
             HashSet<string> relativesB = GetCloseRelatives(nameB);
 
             foreach(string r in relativesA)
             {
-                if (relativesB.Contains(r)) return true; // Found a shared parent or grandparent
+                if (relativesB.Contains(r)) return true;
             }
 
-            // 3. Direct Grandparent Check (Deep Lineage)
-            // If A is in B's close relatives list (A is B's grandparent)
             if (relativesB.Contains(nameA)) return true;
-            // If B is in A's close relatives list (B is A's grandparent)
             if (relativesA.Contains(nameB)) return true;
 
             return false;
@@ -213,11 +232,17 @@ namespace KerbalGenerations
                 GrowingBabies.Add(newName, birth);
             }
 
-            if (PregnancyProgress.ContainsKey(oldName))
+            // Update rename handler for new ActivePregnancies dict
+            if (ActivePregnancies.ContainsKey(oldName))
             {
-                double prog = PregnancyProgress[oldName];
-                PregnancyProgress.Remove(oldName);
-                PregnancyProgress.Add(newName, prog);
+                var rec = ActivePregnancies[oldName];
+                ActivePregnancies.Remove(oldName);
+                ActivePregnancies.Add(newName, rec);
+            }
+
+            foreach (var p in ActivePregnancies.Values)
+            {
+                if (p.FatherName == oldName) p.FatherName = newName;
             }
         }
     }
@@ -241,27 +266,23 @@ namespace KerbalGenerations
     [KSPAddon(KSPAddon.Startup.Flight, false)]
     public class GenerationsFlightManager : MonoBehaviour
     {
-        // --- Settings ---
         private Rect _windowRect = new Rect(20, 100, 320, 580); 
         private bool _showWindow = false;
         private Vector2 _scrollPosition; 
         
-        // Renaming State
         private bool _isRenaming = false;
         private ProtoCrewMember _kerbalToRename = null;
         private string _renameBuffer = "";
 
-        // Status Text
         private string _breedingStatus = "Initializing...";
 
-        // Local copies of settings
         private bool _breedingEnabled = true;
         private int _genderMode = 0;
         private float _breedingSpeed = 10.0f;
         private int _maxConcurrentPregnancies = 1; 
         private float _childhoodDays = 426.0f; 
+        private int _fatherAssignmentMode = 0;
         
-        // State
         private const double BASE_GESTATION_SECONDS = 21600; 
 
         void Start()
@@ -273,6 +294,7 @@ namespace KerbalGenerations
                 _breedingSpeed = GenerationsData.Instance.BreedingSpeed;
                 _maxConcurrentPregnancies = GenerationsData.Instance.MaxConcurrentPregnancies;
                 _childhoodDays = (float)(GenerationsData.Instance.ChildhoodDuration / 21600.0);
+                _fatherAssignmentMode = GenerationsData.Instance.FatherAssignmentMode;
             }
             CheckMaturation();
         }
@@ -298,7 +320,7 @@ namespace KerbalGenerations
 
             if (Time.timeScale > 0)
             {
-                ProcessBreeding(Time.deltaTime);
+                ProcessBreeding(); // No longer needs deltaTime!
             }
             
             if (Time.frameCount % 60 == 0) 
@@ -307,18 +329,11 @@ namespace KerbalGenerations
             }
         }
 
-        private void ProcessBreeding(float deltaTime)
+        private void ProcessBreeding()
         {
             Vessel v = FlightGlobals.ActiveVessel;
             if (GenerationsData.Instance == null) return;
             
-            int totalSeats = v.GetCrewCapacity();
-            int currentCrew = v.GetCrewCount();
-            if ((totalSeats - currentCrew) < 2) {
-                _breedingStatus = "Paused: Not enough room (Need 2+ empty seats)";
-                return;
-            }
-
             List<ProtoCrewMember> crew = v.GetVesselCrew();
             List<ProtoCrewMember> males = new List<ProtoCrewMember>();
             List<ProtoCrewMember> females = new List<ProtoCrewMember>();
@@ -328,6 +343,70 @@ namespace KerbalGenerations
                     if(c.gender == ProtoCrewMember.Gender.Male) males.Add(c);
                     if(c.gender == ProtoCrewMember.Gender.Female) females.Add(c);
                 }
+            }
+
+            double currentUT = Planetarium.GetUniversalTime();
+
+            // 1. CHECK FOR BIRTHS FIRST (Catching up on background pregnancies)
+            List<ProtoCrewMember> mothersDue = new List<ProtoCrewMember>();
+            foreach (var mom in females)
+            {
+                if (GenerationsData.Instance.ActivePregnancies.ContainsKey(mom.name))
+                {
+                    if (currentUT >= GenerationsData.Instance.ActivePregnancies[mom.name].DueDate)
+                    {
+                        mothersDue.Add(mom);
+                    }
+                }
+            }
+
+            foreach (var mom in mothersDue)
+            {
+                var record = GenerationsData.Instance.ActivePregnancies[mom.name];
+                string actualDad = record.FatherName;
+
+                // check if they wanted the old weird dynamic dad thing
+                if (actualDad == "Pending")
+                {
+                    ProtoCrewMember foundDad = PickRandomDad(males, mom.name);
+                    if (foundDad == null)
+                    {
+                        _breedingStatus = "Paused: A mother is due, but there's no dad on the ship!";
+                        return; // gotta wait for a guy to dock
+                    }
+                    actualDad = foundDad.name;
+                }
+                
+                // Check for empty seats to spawn the baby
+                Part emptyPart = null;
+                foreach (Part p in v.parts)
+                {
+                    if (p.CrewCapacity > p.protoModuleCrew.Count)
+                    {
+                        emptyPart = p;
+                        break;
+                    }
+                }
+
+                if (emptyPart != null)
+                {
+                    SpawnBaby(v, mom, actualDad);
+                    GenerationsData.Instance.ActivePregnancies.Remove(mom.name);
+                }
+                else
+                {
+                    _breedingStatus = "Paused: A mother is ready to give birth, but no empty seats!";
+                    return; // Halt breeding processes until baby has room
+                }
+            }
+
+
+            // 2. CHECK FOR NEW PREGNANCIES
+            int totalSeats = v.GetCrewCapacity();
+            int currentCrew = v.GetCrewCount();
+            if ((totalSeats - currentCrew) < 2) {
+                _breedingStatus = "Paused: Not enough room (Need 2+ empty seats)";
+                return;
             }
 
             if (males.Count == 0) {
@@ -342,7 +421,7 @@ namespace KerbalGenerations
             int currentShipPregnancies = 0;
             foreach (var mom in females)
             {
-                if (GenerationsData.Instance.PregnancyProgress.ContainsKey(mom.name))
+                if (GenerationsData.Instance.ActivePregnancies.ContainsKey(mom.name))
                     currentShipPregnancies++;
             }
 
@@ -350,30 +429,27 @@ namespace KerbalGenerations
 
             foreach(var mom in females)
             {
-                bool isPregnant = GenerationsData.Instance.PregnancyProgress.ContainsKey(mom.name);
-
-                if (isPregnant)
-                {
-                    GenerationsData.Instance.PregnancyProgress[mom.name] += deltaTime * _breedingSpeed;
-                    
-                    if (GenerationsData.Instance.PregnancyProgress[mom.name] >= BASE_GESTATION_SECONDS)
-                    {
-                        ProtoCrewMember dad = PickRandomDad(males, mom.name);
-                        if (dad != null) {
-                            SpawnBaby(v, mom, dad);
-                            GenerationsData.Instance.PregnancyProgress.Remove(mom.name);
-                        }
-                    }
-                    continue; 
-                }
-
+                // Skip if already pregnant or limit reached
+                if (GenerationsData.Instance.ActivePregnancies.ContainsKey(mom.name)) continue;
                 if (currentShipPregnancies >= _maxConcurrentPregnancies) continue;
 
                 ProtoCrewMember partner = PickRandomDad(males, mom.name);
 
                 if (partner != null)
                 {
-                    GenerationsData.Instance.PregnancyProgress[mom.name] = 0.0;
+                    // Calculate due date based on Universal Time
+                    double totalGestationDuration = BASE_GESTATION_SECONDS / _breedingSpeed;
+                    double dueDate = currentUT + totalGestationDuration;
+
+                    string dadToSave = partner.name;
+                    if (_fatherAssignmentMode == 1) 
+                    {
+                        // don't lock him in yet, we'll pick at birth
+                        dadToSave = "Pending"; 
+                    }
+
+                    // Assign and remember father
+                    GenerationsData.Instance.ActivePregnancies[mom.name] = new PregnancyRecord(dadToSave, dueDate);
                     currentShipPregnancies++; 
                 }
             }
@@ -381,7 +457,6 @@ namespace KerbalGenerations
 
         private ProtoCrewMember PickRandomDad(List<ProtoCrewMember> males, string momName)
         {
-            // Retry logic: Try 10 times to find a non-related dad
             for (int i=0; i<10; i++) 
             {
                 var potentialDad = males[UnityEngine.Random.Range(0, males.Count)];
@@ -395,7 +470,7 @@ namespace KerbalGenerations
             return null;
         }
 
-        private void SpawnBaby(Vessel v, ProtoCrewMember mom, ProtoCrewMember dad)
+        private void SpawnBaby(Vessel v, ProtoCrewMember mom, string dadName)
         {
             ProtoCrewMember.Gender babyGender = ProtoCrewMember.Gender.Male;
             if (_genderMode == 1) babyGender = ProtoCrewMember.Gender.Male;
@@ -421,14 +496,13 @@ namespace KerbalGenerations
                 if (success)
                 {
                     baby.rosterStatus = ProtoCrewMember.RosterStatus.Assigned;
-                    
                     GameEvents.onVesselWasModified.Fire(v);
                     
-                    ScreenMessages.PostScreenMessage($"A baby has been born to {dad.name} and {mom.name}! Welcome {baby.name}", 5.0f, ScreenMessageStyle.UPPER_CENTER);
+                    ScreenMessages.PostScreenMessage($"A baby has been born to {dadName} and {mom.name}! Welcome {baby.name}", 5.0f, ScreenMessageStyle.UPPER_CENTER);
 
                     if (GenerationsData.Instance != null)
                     {
-                        GenerationsData.Instance.FamilyTree[baby.name] = new FamilyLink(baby.name, dad.name, mom.name, Planetarium.GetUniversalTime());
+                        GenerationsData.Instance.FamilyTree[baby.name] = new FamilyLink(baby.name, dadName, mom.name, Planetarium.GetUniversalTime());
                         GenerationsData.Instance.GrowingBabies[baby.name] = Planetarium.GetUniversalTime();
                     }
                 }
@@ -436,10 +510,6 @@ namespace KerbalGenerations
                 {
                     ScreenMessages.PostScreenMessage("Birth failed: Could not place baby in seat!", 5.0f, ScreenMessageStyle.UPPER_CENTER);
                 }
-            }
-            else
-            {
-                ScreenMessages.PostScreenMessage("Birth failed: No empty seats found!", 5.0f, ScreenMessageStyle.UPPER_CENTER);
             }
         }
 
@@ -549,6 +619,17 @@ namespace KerbalGenerations
                 }
 
                 GUILayout.Space(5);
+                GUILayout.Label("Father Assignment:");
+                int oldAssignment = _fatherAssignmentMode;
+                if (GUILayout.Toggle(_fatherAssignmentMode == 0, "Realistic (At Conception)")) _fatherAssignmentMode = 0;
+                if (GUILayout.Toggle(_fatherAssignmentMode == 1, "Dynamic (At Birth)")) _fatherAssignmentMode = 1;
+                
+                if (_fatherAssignmentMode != oldAssignment && GenerationsData.Instance != null)
+                {
+                    GenerationsData.Instance.FatherAssignmentMode = _fatherAssignmentMode;
+                }
+
+                GUILayout.Space(5);
                 GUILayout.Label($"Max Simultaneous Pregnancies: {_maxConcurrentPregnancies}");
                 float newLimit = GUILayout.HorizontalSlider(_maxConcurrentPregnancies, 1.0f, 10.0f);
                 if ((int)newLimit != _maxConcurrentPregnancies)
@@ -580,15 +661,20 @@ namespace KerbalGenerations
 
                 GUILayout.Space(10);
                 
-                if (GenerationsData.Instance != null && GenerationsData.Instance.PregnancyProgress.Count > 0)
+                if (GenerationsData.Instance != null && GenerationsData.Instance.ActivePregnancies.Count > 0)
                 {
                     GUILayout.Label("Expecting Mothers:", new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold });
                     
-                    List<string> activeMoms = new List<string>(GenerationsData.Instance.PregnancyProgress.Keys);
+                    double now = Planetarium.GetUniversalTime();
+                    List<string> activeMoms = new List<string>(GenerationsData.Instance.ActivePregnancies.Keys);
                     foreach(string momName in activeMoms)
                     {
-                        double prog = GenerationsData.Instance.PregnancyProgress[momName];
-                        float pct = (float)(prog / BASE_GESTATION_SECONDS * 100);
+                        double due = GenerationsData.Instance.ActivePregnancies[momName].DueDate;
+                        double totalGestation = BASE_GESTATION_SECONDS / _breedingSpeed;
+                        double elapsed = totalGestation - (due - now);
+                        
+                        // Calculate percentage 0-100%
+                        float pct = Mathf.Clamp01((float)(elapsed / totalGestation)) * 100f;
                         GUILayout.Label($"- {momName}: {pct:F0}%");
                     }
                 }

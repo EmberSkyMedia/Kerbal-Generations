@@ -1,0 +1,12 @@
+Ignore the build folders
+
+bin/
+obj/
+
+Ignore Mac junk files (just in case!)
+
+.DS_Store
+
+Ignore personal VS Codium settings
+
+.vscode/
