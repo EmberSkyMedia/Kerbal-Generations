@@ -512,7 +512,24 @@ namespace KerbalGenerations
                 }
             }
         }
+        private bool IsStandardProfession(string trait)
+        {
+            return trait == "Pilot" ||
+                   trait == "Engineer" ||
+                   trait == "Scientist";
+        }
 
+        private void AssignRandomTrait(ProtoCrewMember kerbal)
+        {
+            float roll = UnityEngine.Random.value;
+        
+            if (roll < 0.333333f)
+                kerbal.trait = "Pilot";
+            else if (roll < 0.666666f)
+                kerbal.trait = "Engineer";
+            else
+                kerbal.trait = "Scientist";
+        }
         private void CheckMaturation()
         {
             if (GenerationsData.Instance == null) return;
@@ -532,13 +549,64 @@ namespace KerbalGenerations
                     ProtoCrewMember k = HighLogic.CurrentGame.CrewRoster[name];
                     if (k != null && k.type == ProtoCrewMember.KerbalType.Tourist)
                     {
-                        k.type = ProtoCrewMember.KerbalType.Crew;
-                        float roll = UnityEngine.Random.value;
-                        if (roll < 0.33f) k.trait = "Pilot";
-                        else if (roll < 0.66f) k.trait = "Engineer";
-                        else k.trait = "Scientist";
-                        
-                        ScreenMessages.PostScreenMessage(name + " has grown up and is now a " + k.trait + "!", 10.0f, ScreenMessageStyle.UPPER_CENTER);
+                    k.type = ProtoCrewMember.KerbalType.Crew;
+
+                    // 50% chance of inheriting parents' profession
+                    if (UnityEngine.Random.value < 0.5f &&
+                        GenerationsData.Instance.FamilyTree.TryGetValue(name, out FamilyLink family))
+                    {
+                        ProtoCrewMember father = HighLogic.CurrentGame.CrewRoster[family.FatherName];
+                        ProtoCrewMember mother = HighLogic.CurrentGame.CrewRoster[family.MotherName];
+                    
+                        if (father != null && mother != null)
+                        {
+                            string dadTrait = father.trait;
+                            string momTrait = mother.trait;
+                    
+                            // Same profession always breeds true
+                            if (dadTrait == momTrait)
+                            {
+                                k.trait = dadTrait;
+                            }
+                            // Both are stock professions but different
+                            else if (IsStandardProfession(dadTrait) &&
+                                     IsStandardProfession(momTrait))
+                            {
+                                if ((dadTrait == "Pilot" && momTrait == "Engineer") ||
+                                    (dadTrait == "Engineer" && momTrait == "Pilot"))
+                                {
+                                    k.trait = "Scientist";
+                                }
+                                else if ((dadTrait == "Pilot" && momTrait == "Scientist") ||
+                                         (dadTrait == "Scientist" && momTrait == "Pilot"))
+                                {
+                                    k.trait = "Engineer";
+                                }
+                                else
+                                {
+                                    // Engineer + Scientist
+                                    k.trait = "Pilot";
+                                }
+                            }
+                            else
+                            {
+                                // Mixed non-standard professions (Tourist + Pilot, etc.)
+                                AssignRandomTrait(k);
+                            }
+                        }
+                        else
+                        {
+                            // Missing parent data
+                            AssignRandomTrait(k);
+                        }
+                    }
+                    else
+                    {
+                        // Pure random career
+                        AssignRandomTrait(k);
+                    }
+                    
+                    ScreenMessages.PostScreenMessage(name + " has grown up and is now a " + k.trait + "!", 10.0f, ScreenMessageStyle.UPPER_CENTER);    
                     }
                     grownUps.Add(name);
                 }
